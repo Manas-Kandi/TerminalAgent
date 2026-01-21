@@ -66,14 +66,17 @@ class AuditLog:
     - Append-only: entries cannot be modified or deleted
     - Every privileged op is logged
     - Secrets are never recorded (caller responsibility)
+    - PII-safe: field names are hashed to prevent leaking schema info
     - Supports query/export for replay and debugging
     """
     
-    def __init__(self, db_path: Optional[str | Path] = None):
+    def __init__(self, db_path: Optional[str | Path] = None, workspace_salt: Optional[str] = None):
         """Initialize the audit log.
         
         Args:
             db_path: Path to SQLite database. If None, uses in-memory DB.
+            workspace_salt: Salt for hashing field names (PII protection).
+                          If None, generates a random salt.
         """
         self._db_path = str(db_path) if db_path else ":memory:"
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -81,6 +84,11 @@ class AuditLog:
         self._current_tx: Optional[str] = None
         self._current_checkpoint: Optional[str] = None
         self._redact_keys: set[str] = {"password", "secret", "token", "key", "credential"}
+        self._pii_field_names: set[str] = {"ssn", "social_security", "dob", "date_of_birth", 
+                                            "credit_card", "card_number", "cvv", "phone",
+                                            "address", "zip", "postal"}
+        self._workspace_salt = workspace_salt or uuid.uuid4().hex
+        self._hash_field_names = True  # Enable PII protection by default
         self._init_db()
     
     def _init_db(self) -> None:
@@ -115,22 +123,56 @@ class AuditLog:
             """)
             self._conn.commit()
     
-    def _redact(self, args: dict) -> dict:
-        """Redact sensitive values from args."""
+    def _hash_field_name(self, field_name: str) -> str:
+        """Hash a field name for PII protection.
+        
+        Uses salted SHA256, truncated to 8 chars for readability.
+        The salt is workspace-specific so hashes differ across workspaces.
+        """
+        import hashlib
+        salted = f"{field_name}:{self._workspace_salt}"
+        return hashlib.sha256(salted.encode()).hexdigest()[:8]
+    
+    def _is_pii_field(self, field_name: str) -> bool:
+        """Check if a field name indicates PII."""
+        name_lower = field_name.lower()
+        return any(pii in name_lower for pii in self._pii_field_names)
+    
+    def _redact(self, args: dict, parent_key: str = "") -> dict:
+        """Redact sensitive values and hash PII field names from args.
+        
+        - Sensitive values (passwords, tokens) are replaced with [REDACTED]
+        - PII field names (ssn, credit_card) are hashed to prevent schema leakage
+        """
         result = {}
         for k, v in args.items():
-            # Only redact if the key exactly matches or ends with a sensitive word
             key_lower = k.lower()
+            
+            # Check if value should be redacted
             is_sensitive = any(
                 key_lower == sensitive or key_lower.endswith(f"_{sensitive}") or key_lower.endswith(sensitive)
                 for sensitive in self._redact_keys
             )
+            
+            # Check if field name is PII and should be hashed
+            should_hash_key = self._hash_field_names and self._is_pii_field(k)
+            output_key = f"[PII:{self._hash_field_name(k)}]" if should_hash_key else k
+            
             if is_sensitive:
-                result[k] = "[REDACTED]"
+                result[output_key] = "[REDACTED]"
             elif isinstance(v, dict):
-                result[k] = self._redact(v)
+                result[output_key] = self._redact(v, parent_key=k)
+            elif isinstance(v, list) and parent_key in ("fields", "filled_fields"):
+                # Hash field names in lists (e.g., form field lists)
+                if self._hash_field_names:
+                    result[output_key] = [
+                        f"[PII:{self._hash_field_name(item)}]" if isinstance(item, str) and self._is_pii_field(item) else item
+                        for item in v
+                    ]
+                else:
+                    result[output_key] = v
             else:
-                result[k] = v
+                result[output_key] = v
         return result
     
     def log(
