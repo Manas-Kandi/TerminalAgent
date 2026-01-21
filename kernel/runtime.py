@@ -103,6 +103,7 @@ class BrowserAPI:
         self.Form = FormAPI(self)
         self.Workspace = WorkspaceAPI(self)
         self.human = HumanAPI(self)
+        self.Audit = AuditAPI(self)
     
     def _require_cap(self, operation: str, resource: str) -> None:
         """Check capability and raise if denied."""
@@ -284,6 +285,56 @@ class HumanAPI:
     def set_auto_approve(self, value: bool) -> None:
         """Set auto-approve mode (for testing only)."""
         self._auto_approve = value
+
+
+class AuditAPI:
+    """Audit log query API for agents."""
+    
+    def __init__(self, browser: BrowserAPI):
+        self._b = browser
+    
+    def query(
+        self,
+        principal: Optional[str] = None,
+        op: Optional[str] = None,
+        object_id: Optional[str] = None,
+        tx_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Query the audit log.
+        
+        Args:
+            principal: Filter by principal
+            op: Filter by operation (supports prefix with *)
+            object_id: Filter by object ID
+            tx_id: Filter by transaction ID
+            limit: Maximum entries to return
+            
+        Returns:
+            List of audit entry dicts
+        """
+        self._b._require_cap("audit.read", "*")
+        
+        entries = self._b._audit.query(
+            principal=principal,
+            op=op,
+            object_id=object_id,
+            tx_id=tx_id,
+            limit=limit,
+        )
+        
+        return [e.to_dict() for e in entries]
+    
+    def count(self, **kwargs) -> int:
+        """Count audit entries matching filters."""
+        self._b._require_cap("audit.read", "*")
+        return self._b._audit.count(**kwargs)
+    
+    def get_transaction_log(self, tx_id: str) -> list[dict]:
+        """Get all audit entries for a transaction."""
+        self._b._require_cap("audit.read", tx_id)
+        entries = self._b._audit.get_transaction_log(tx_id)
+        return [e.to_dict() for e in entries]
 
 
 class AgentRuntime:
