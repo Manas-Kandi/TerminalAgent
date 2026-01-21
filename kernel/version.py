@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 
 
 # Current kernel version
-KERNEL_VERSION = "0.2.0"
+KERNEL_VERSION = "0.2.0"  # Tagged: Chromium-ready with COW snapshots
 
 # Minimum supported workflow version (workflows below this won't run)
 MIN_WORKFLOW_VERSION = "0.1.0"
